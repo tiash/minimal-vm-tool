@@ -11,13 +11,16 @@ status — all over a small line-delimited JSON protocol.
 
 ## Repository layout
 
-This is a Cargo workspace with three members:
+This is a Cargo workspace with two members:
 
 | Crate                           | Path          | Description                                                                       |
 | ------------------------------- | ------------- | --------------------------------------------------------------------------------- |
 | `minimal-vm-exec-protocol`      | [`protocol/`](protocol) | The wire protocol: message types, serde definitions, and async send/receive helpers (`io::Tx` / `io::Rx`). |
 | `minimal-vm-exec-agent`         | [`agent/`](agent)       | The binary that runs **inside** the VM. Spawned per connection (e.g. by `inetd`/`systemd` socket activation) with the vsock connection on stdin/stdout. |
-| `test-logger`                   | [`test-logger/`](test-logger) | Tiny test-only logger initializer used by the integration tests.                |
+
+The agent's integration tests use the external
+[`simple-test-logging`](https://github.com/tiash/simple-test-logging) crate
+(pulled in as a git dev-dependency) for log initialization.
 
 ## The protocol
 

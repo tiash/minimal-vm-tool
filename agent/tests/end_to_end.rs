@@ -82,7 +82,7 @@ impl<'l> StringExt<'l> for &'l str {
 
 #[tokio::test]
 async fn echo() {
-    test_logger::init();
+    simple_test_logging::init();
 
     let output = run!([r#"
         {"exec":{"prog":"echo","args":["Hello, world!"]}}
@@ -104,7 +104,7 @@ async fn echo() {
 
 #[tokio::test]
 async fn cat() {
-    test_logger::init();
+    simple_test_logging::init();
     let output = run!([r#"
         {"exec":{"prog":"cat"}}
         {"stdin":{"data":"Hello, world!\n"}}
@@ -126,7 +126,7 @@ async fn cat() {
 
 #[tokio::test]
 async fn kill() {
-    test_logger::init();
+    simple_test_logging::init();
     let output = run!([r#"
         {"exec":{"prog":"sleep","args":["1000"]}}
         {"kill":{"signal":15}}

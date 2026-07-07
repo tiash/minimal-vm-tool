@@ -29,4 +29,4 @@ stderrlog = "0.6.0"
 expect-test = "1.5"
 dedent = "0.1.1"
 regex = "1.12.3"
-test-logger = { path = "../test-logger" }
+simple-test-logging = { git = "https://github.com/tiash/simple-test-logging.git" }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["protocol", "agent", "test-logger"]
+members = ["protocol", "agent"]
 resolver = "2"
 
 [workspace.package]
