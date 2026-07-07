@@ -1,0 +1,36 @@
+# rustfmt configuration.
+#
+# Lines marked `# unstable` require the nightly channel. They are commented out
+# so that `cargo fmt` on the stable toolchain (see rust-toolchain.toml) runs
+# without warnings. To re-enable them, switch fmt to `cargo +nightly fmt` and
+# set `unstable_features = true`.
+
+# --- stable options (active) ---
+force_explicit_abi = true
+hard_tabs = false
+match_arm_leading_pipes = "Always"
+match_block_trailing_comma = true
+newline_style = "Unix"
+reorder_modules = true
+tab_spaces = 2
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+# --- unstable options (nightly only; ignored on stable) ---
+# unstable_features = true               # master switch for everything below
+# blank_lines_lower_bound = 1            # unstable
+# fn_args_layout = "Vertical"            # unstable (also deprecated: use fn_params_layout)
+# float_literal_trailing_zero = "Always" # unstable
+# force_multiline_blocks = true          # unstable
+# format_code_in_doc_comments = true     # unstable
+# format_macro_matchers = true           # unstable
+# format_strings = true                  # unstable
+# group_imports = "StdExternalCrate"     # unstable
+# hex_literal_case = "Upper"             # unstable
+# imports_granularity = "Item"           # unstable
+# imports_layout = "Vertical"            # unstable
+# normalize_comments = true              # unstable
+# normalize_doc_attributes = true        # unstable
+# overflow_delimited_expr = true         # unstable
+# reorder_impl_items = true              # unstable
+# wrap_comments = true                   # unstable

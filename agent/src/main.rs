@@ -3,36 +3,36 @@ use anyhow::anyhow;
 use minimal_vm_exec_protocol as protocol;
 use std::os::{fd::AsRawFd, unix::prelude::ExitStatusExt as _};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _},
-    select,
+  io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _},
+  select,
 };
 use tokio_util::bytes::Bytes;
 
 #[derive(clap::Parser, Debug)]
 #[command(name = "minimal-vm-exec-agent")]
 #[command(
-    about = "Minimal VM Exec Agent",
-    long_about = "This agent is intended to be launched by inetd or systemd (with inetd calling conventions) for each connection to the exec protocol. It expects to get the virtio-vsock connection on its stdin/stdout. It will then listen for JSON messages according to the specification and execute one process inside the VM accordingly."
+  about = "Minimal VM Exec Agent",
+  long_about = "This agent is intended to be launched by inetd or systemd (with inetd calling conventions) for each connection to the exec protocol. It expects to get the virtio-vsock connection on its stdin/stdout. It will then listen for JSON messages according to the specification and execute one process inside the VM accordingly."
 )]
 struct Args {}
 
 #[tokio::main]
 async fn main() {
-    stderrlog::new()
-        .verbosity(stderrlog::LogLevelNum::Error)
-        .timestamp(stderrlog::Timestamp::Millisecond)
-        .color(stderrlog::ColorChoice::Auto)
-        .show_module_names(true)
-        .init()
-        .expect("Failed to initialize logger");
+  stderrlog::new()
+    .verbosity(stderrlog::LogLevelNum::Error)
+    .timestamp(stderrlog::Timestamp::Millisecond)
+    .color(stderrlog::ColorChoice::Auto)
+    .show_module_names(true)
+    .init()
+    .expect("Failed to initialize logger");
 
-    let Args {} = clap::Parser::parse();
+  let Args {} = clap::Parser::parse();
 
-    log::info!("Minimal VM Exec Agent starting...");
+  log::info!("Minimal VM Exec Agent starting...");
 
-    let mut tx = protocol::io::Tx::new(tokio::io::stdout());
+  let mut tx = protocol::io::Tx::new(tokio::io::stdout());
 
-    let status: Result<()> = async {
+  let status: Result<()> = async {
         let mut rx = protocol::io::Rx::new(tokio::io::BufReader::new(tokio::io::stdin()));
 
     let exec : protocol::Exec = match rx.recv().await? {
@@ -158,68 +158,68 @@ let stderr = {
     stdout?;
     stderr?;
     Ok(())}.await;
-    log::info!("Main task completed, status: {:?}", status);
-    match &status {
-        Ok(()) => {}
-        Err(e) => {
-            let _: Result<()> = tx
-                .send(&[protocol::Message::Error(protocol::Error {
-                    message: e.to_string(),
-                })])
-                .await;
-        }
-    }
-    log::debug!("closing stdin");
-    let _ = nix::unistd::close(nix::libc::STDIN_FILENO);
-    log::debug!("closing stdout");
-    let _: Result<()> = tx.flush().await;
-    if let Ok(mut stdout) = tx.close().await {
-        let _: std::io::Result<()> = stdout.flush().await;
-        let _: std::io::Result<()> = stdout.shutdown().await;
-        log::debug!("closing stdout done");
-    }
-    // let _ = nix::unistd::close(nix::libc::STDOUT_FILENO);
-    // let _ = nix::unistd::close(nix::libc::STDERR_FILENO);
+  log::info!("Main task completed, status: {:?}", status);
+  match &status {
+    | Ok(()) => {},
+    | Err(e) => {
+      let _: Result<()> = tx
+        .send(&[protocol::Message::Error(protocol::Error {
+          message: e.to_string(),
+        })])
+        .await;
+    },
+  }
+  log::debug!("closing stdin");
+  let _ = nix::unistd::close(nix::libc::STDIN_FILENO);
+  log::debug!("closing stdout");
+  let _: Result<()> = tx.flush().await;
+  if let Ok(mut stdout) = tx.close().await {
+    let _: std::io::Result<()> = stdout.flush().await;
+    let _: std::io::Result<()> = stdout.shutdown().await;
+    log::debug!("closing stdout done");
+  }
+  // let _ = nix::unistd::close(nix::libc::STDOUT_FILENO);
+  // let _ = nix::unistd::close(nix::libc::STDERR_FILENO);
 
-    //unsafe {
-    //nix::libc::exit(0);
-    //}
-    log::info!("Minimal VM Exec Agent exiting...");
+  //unsafe {
+  //nix::libc::exit(0);
+  //}
+  log::info!("Minimal VM Exec Agent exiting...");
 }
 
 mod process;
 
 async fn read_line_or_chunk(
-    mut r: impl AsyncRead + Unpin,
-    line_buffered: bool,
-    buffer: &mut Vec<u8>,
+  mut r: impl AsyncRead + Unpin,
+  line_buffered: bool,
+  buffer: &mut Vec<u8>,
 ) -> Result<Option<Bytes>, std::io::Error> {
-    if line_buffered {
-        loop {
-            if let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                let data = Bytes::copy_from_slice(&buffer[..=pos]);
-                buffer.drain(..=pos);
-                return Ok(Some(data));
-            } else {
-                if r.read_buf(buffer).await? == 0 {
-                    if buffer.is_empty() {
-                        return Ok(None);
-                    } else {
-                        let data = Bytes::copy_from_slice(buffer);
-                        buffer.clear();
-                        return Ok(Some(data));
-                    }
-                }
-            }
+  if line_buffered {
+    loop {
+      if let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+        let data = Bytes::copy_from_slice(&buffer[..=pos]);
+        buffer.drain(..=pos);
+        return Ok(Some(data));
+      } else {
+        if r.read_buf(buffer).await? == 0 {
+          if buffer.is_empty() {
+            return Ok(None);
+          } else {
+            let data = Bytes::copy_from_slice(buffer);
+            buffer.clear();
+            return Ok(Some(data));
+          }
         }
-    } else {
-        match r.read_buf(buffer).await? {
-            0 if buffer.is_empty() => Ok(None),
-            _ => {
-                let data = Bytes::copy_from_slice(buffer);
-                buffer.clear();
-                Ok(Some(data))
-            }
-        }
+      }
     }
+  } else {
+    match r.read_buf(buffer).await? {
+      | 0 if buffer.is_empty() => Ok(None),
+      | _ => {
+        let data = Bytes::copy_from_slice(buffer);
+        buffer.clear();
+        Ok(Some(data))
+      },
+    }
+  }
 }
