@@ -1,0 +1,8 @@
+[package]
+name = "test-logger"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+log = "0.4.32"
+stderrlog = "0.6.0"

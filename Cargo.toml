@@ -1,0 +1,13 @@
+[workspace]
+members = ["protocol", "agent", "test-logger"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.metadata]
+rust-version = "1.95.0"
+
+[profile.release]
+panic = "abort"
