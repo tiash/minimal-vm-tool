@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
+use clap::Parser;
 use minimal_vm_exec_protocol as protocol;
 use std::os::{fd::AsRawFd, unix::prelude::ExitStatusExt as _};
 use tokio::{
@@ -8,25 +9,49 @@ use tokio::{
 };
 use tokio_util::bytes::Bytes;
 
+/// Command-line arguments for the minimal-vm-exec-agent.
 #[derive(clap::Parser, Debug)]
 #[command(name = "minimal-vm-exec-agent")]
 #[command(
   about = "Minimal VM Exec Agent",
   long_about = "This agent is intended to be launched by inetd or systemd (with inetd calling conventions) for each connection to the exec protocol. It expects to get the virtio-vsock connection on its stdin/stdout. It will then listen for JSON messages according to the specification and execute one process inside the VM accordingly."
 )]
-struct Args {}
+struct Args {
+  /// Increase logging verbosity above the default (`Info`).
+  /// `-v` selects `Debug`, `-vv` selects `Trace`.
+  #[arg(short, long, action = clap::ArgAction::Count)]
+  verbose: u8,
+
+  /// Decrease logging verbosity below the default (`Info`).
+  /// `-q` selects `Warn`, `-qq` selects `Error`.
+  #[arg(short, long, action = clap::ArgAction::Count)]
+  quiet: u8,
+}
+
+/// Resolve the `-v` / `-q` flag counts into a `stderrlog` verbosity level.
+fn verbosity_from_flags(verbose: u8, quiet: u8) -> stderrlog::LogLevelNum {
+  match verbose as i16 - quiet as i16 {
+    | n if n <= -2 => stderrlog::LogLevelNum::Error,
+    | -1 => stderrlog::LogLevelNum::Warn,
+    | 0 => stderrlog::LogLevelNum::Info,
+    | 1 => stderrlog::LogLevelNum::Debug,
+    | _ => stderrlog::LogLevelNum::Trace,
+  }
+}
 
 #[tokio::main]
 async fn main() {
+  let args = Args::parse();
+
   stderrlog::new()
-    .verbosity(stderrlog::LogLevelNum::Error)
+    .verbosity(verbosity_from_flags(args.verbose, args.quiet))
     .timestamp(stderrlog::Timestamp::Millisecond)
     .color(stderrlog::ColorChoice::Auto)
     .show_module_names(true)
     .init()
     .expect("Failed to initialize logger");
 
-  let Args {} = clap::Parser::parse();
+  log::info!("Minimal VM Exec Agent starting with args: {:?}", args);
 
   log::info!("Minimal VM Exec Agent starting...");
 
@@ -64,13 +89,15 @@ async fn main() {
         async move || -> Result<()> {
             let mut rx = rx;
             let mut tx = tx;
-    log::debug!("Stdin copy task starting...");
+            log::debug!("Stdin copy task starting...");
                 while let Some(protocol::Stdin(Some(data))) = rx.recv::<protocol::Stdin<Option<Bytes>>>().await? {
+                    log::debug!("Received {} bytes of stdin data from protocol", data.len());
+                    log::debug!("Writing {} bytes to child stdin", data.len());
                     child_stdin.write_all(&data).await?;
                 }
-    log::debug!("Stdin copy data end...");
+            log::debug!("Stdin copy data end...");
             tx.send(&[protocol::Message::Stdin(protocol::Stdio::Closed)]).await?;
-    log::debug!("Stdin copy task exiting...");
+            log::debug!("Stdin copy task exiting...");
             Ok(())
     }};
     let stdout = {
@@ -84,6 +111,7 @@ async fn main() {
                 select!{
             data = read_line_or_chunk(&mut child_stdout, line_buffered, &mut buffer) => {
                 if let Some(data) = data? {
+                    log::debug!("Sending {} bytes on stdout", data.len());
                     tx.send(&[protocol::Message::Stdout(protocol::Stdio::Data(data))]).await?;
                 }else {
                     break;
@@ -108,6 +136,7 @@ let stderr = {
                 select!{
             data = read_line_or_chunk(&mut child_stderr, line_buffered, &mut buffer) =>  {
                 if let Some(data) = data? {
+                    log::debug!("Sending {} bytes on stderr", data.len());
                     tx.send(&[protocol::Message::Stderr(protocol::Stdio::Data(data))]).await?;
                 }else {
                     break;

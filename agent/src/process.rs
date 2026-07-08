@@ -116,6 +116,9 @@ pub struct Child {
 }
 
 pub async fn spawn(exec: &protocol::Exec) -> Result<Child> {
+  log::info!("Spawning process: prog={}, args={:?}, pwd={:?}, user={:?}",
+    exec.prog, exec.args, exec.pwd, exec.user);
+
   let mut command = tokio::process::Command::new(&exec.prog);
   command.args(&exec.args);
 
@@ -145,6 +148,7 @@ pub async fn spawn(exec: &protocol::Exec) -> Result<Child> {
   };
 
   if let Some(target_user) = selected_user.filter(|u| u.uid != nix::unistd::getuid()) {
+    log::info!("Dropping privileges to user: {}", target_user.name);
     // SAFETY: This closure runs in the child process between fork and
     // exec (pre_exec). The functions called (setgroups, setgid, setuid)
     // are POSIX async-signal-safe. We clear supplementary groups BEFORE
@@ -171,6 +175,8 @@ pub async fn spawn(exec: &protocol::Exec) -> Result<Child> {
 
   let mut child = command.spawn().context("Failed to spawn child process")?;
   let pid = child.id().unwrap_or(0);
+  log::info!("Process spawned with PID: {}", pid);
+
   let stdin = child
     .stdin
     .take()
