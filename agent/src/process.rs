@@ -154,13 +154,17 @@ pub async fn spawn(exec: &protocol::Exec) -> Result<Child> {
     // -> /etc/profile.d/*, giving the child HOME, PATH, LANG, proxy vars, etc.
     // Without this the socket-activated agent's bare env propagates, missing
     // everything a login shell provides.
-    // let shell = target_user.shell.clone();
     let mut c = tokio::process::Command::new("bash");
     c.arg("-l");
     c.arg("-c");
     // Use exec so the shell replaces itself with the target program (the
-    // child PID is the program, not bash). Pass the program + args via "$@".
-    c.arg("exec \"$@\"");
+    // child PID is the program, not bash). The first arg after the `-c`
+    // script is $0 (the shell name, excluded from "$@"), so it must be a
+    // throwaway — exec.prog has to land at $1 to be part of "$@". The `--`
+    // stops exec from treating a leading-dash program/arg (e.g. `bash -c`,
+    // `uname -sno`) as its own options.
+    c.arg("exec -- \"$@\"");
+    c.arg("bash");
     c.arg(&exec.prog);
     c.args(&exec.args);
     // Set HOME/USER so the shell and profile scripts resolve correctly
