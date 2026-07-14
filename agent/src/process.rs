@@ -116,21 +116,18 @@ pub struct Child {
 }
 
 pub async fn spawn(exec: &protocol::Exec) -> Result<Child> {
-  log::info!("Spawning process: prog={}, args={:?}, pwd={:?}, user={:?}",
-    exec.prog, exec.args, exec.pwd, exec.user);
-
-  let mut command = tokio::process::Command::new(&exec.prog);
-  command.args(&exec.args);
+  log::info!(
+    "Spawning process: prog={}, args={:?}, pwd={:?}, user={:?}",
+    exec.prog,
+    exec.args,
+    exec.pwd,
+    exec.user
+  );
 
   let pwd = match &exec.pwd {
     | Some(p) => PathBuf::from(p),
     | None => std::env::current_dir().context("Failed to get current directory")?,
   };
-  command.current_dir(pwd);
-
-  command.stdin(std::process::Stdio::piped());
-  command.stdout(std::process::Stdio::piped());
-  command.stderr(std::process::Stdio::piped());
 
   let selected_user = {
     if nix::unistd::getuid().is_root() {
@@ -147,7 +144,46 @@ pub async fn spawn(exec: &protocol::Exec) -> Result<Child> {
     }
   };
 
-  if let Some(target_user) = selected_user.filter(|u| u.uid != nix::unistd::getuid()) {
+  let mut command = if let Some(ref target_user) = selected_user
+    .clone()
+    .filter(|u| u.uid != nix::unistd::getuid())
+  {
+    // Drop privileges to the target user AND set up their environment like a
+    // login shell. Run the command through the user's login shell
+    // (`bash -l -c '...'`), which sources /etc/profile -> /etc/set-environment
+    // -> /etc/profile.d/*, giving the child HOME, PATH, LANG, proxy vars, etc.
+    // Without this the socket-activated agent's bare env propagates, missing
+    // everything a login shell provides.
+    let shell = target_user.shell.clone();
+    let mut c = tokio::process::Command::new(&shell);
+    c.arg("-l");
+    c.arg("-c");
+    // Use exec so the shell replaces itself with the target program (the
+    // child PID is the program, not bash). Pass the program + args via "$@".
+    c.arg("exec \"$@\"");
+    c.arg(&exec.prog);
+    c.args(&exec.args);
+    // Set HOME/USER so the shell and profile scripts resolve correctly
+    // before /etc/set-environment runs.
+    c.env("HOME", &target_user.dir);
+    c.env("USER", &target_user.name);
+    c
+  } else {
+    // Running as root (or already the target user): direct exec, no shell.
+    let mut c = tokio::process::Command::new(&exec.prog);
+    c.args(&exec.args);
+    c
+  };
+  command.current_dir(pwd);
+
+  command.stdin(std::process::Stdio::piped());
+  command.stdout(std::process::Stdio::piped());
+  command.stderr(std::process::Stdio::piped());
+
+  if let Some(target_user) = selected_user
+    .clone()
+    .filter(|u| u.uid != nix::unistd::getuid())
+  {
     log::info!("Dropping privileges to user: {}", target_user.name);
     // SAFETY: This closure runs in the child process between fork and
     // exec (pre_exec). The functions called (setgroups, setgid, setuid)
