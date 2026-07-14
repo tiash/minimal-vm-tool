@@ -154,8 +154,8 @@ pub async fn spawn(exec: &protocol::Exec) -> Result<Child> {
     // -> /etc/profile.d/*, giving the child HOME, PATH, LANG, proxy vars, etc.
     // Without this the socket-activated agent's bare env propagates, missing
     // everything a login shell provides.
-    let shell = target_user.shell.clone();
-    let mut c = tokio::process::Command::new(&shell);
+    // let shell = target_user.shell.clone();
+    let mut c = tokio::process::Command::new("bash");
     c.arg("-l");
     c.arg("-c");
     // Use exec so the shell replaces itself with the target program (the
