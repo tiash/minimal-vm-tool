@@ -144,3 +144,89 @@ async fn kill() {
     "#])
   .assert_eq(&output);
 }
+
+/// Many agent instances running at the same time must not interfere with each
+/// other: each connection is a fully independent agent (its own child process,
+/// its own stdio), which is what lets a host fire concurrent exec calls at one
+/// VM. Each instance here runs an interactive `cat` (it only produces output
+/// once its stdin closes), so all N instances overlap in time; each output must
+/// still be exactly its own echo, with no cross-talk.
+#[tokio::test]
+async fn concurrent_instances_are_independent() {
+  simple_test_logging::init();
+
+  const N: usize = 16;
+
+  let one = |i: usize| {
+    let stdin = [
+      r#"{"exec":{"prog":"cat"}}"#.to_string(),
+      format!(r#"{{"stdin":{{"data":"ping {i}\n"}}}}"#),
+      r#"{"stdin":{"closed":true}}"#.to_string(),
+    ]
+    .join("\n");
+    let stdin = Bytes::copy_from_slice(stdin.as_bytes());
+    async move {
+      let mut proc = tokio::process::Command::new(
+        std::env::var("CARGO_BIN_EXE_minimal-vm-exec-agent")
+          .expect("minimal-vm-exec-agent unavailable."),
+      )
+      .stdin(std::process::Stdio::piped())
+      .stdout(std::process::Stdio::piped())
+      .stderr(std::process::Stdio::inherit())
+      .spawn()
+      .expect("failed to run");
+
+      let mut stdin_fd = proc.stdin.take().expect("failed to take stdin");
+      let mut stdout_fd = proc.stdout.take().expect("failed to take stdout");
+      let write = async move {
+        stdin_fd.write_all(&stdin).await.unwrap();
+        stdin_fd.shutdown().await.unwrap();
+      };
+      let read = async move {
+        let mut buf = Vec::new();
+        stdout_fd.read_to_end(&mut buf).await.unwrap();
+        buf
+      };
+      let ((), stdout, status) = tokio::join!(write, read, proc.wait());
+      status.expect("agent exited cleanly");
+      stdout
+    }
+  };
+
+  let outputs = futures_in_order(0..N, one).await;
+  for (i, out) in outputs.iter().enumerate() {
+    let out = String::from_utf8_lossy(out);
+    let out = out.replace_all([
+      // hide stdin closed message
+      (r#"\{"stdin":\{"closed":true\}\}\n"#, r#""#),
+    ]);
+    let out = out.std_cleanup();
+    let out = out.replace(&format!("ping {i}"), "ping 0");
+    expect!([r#"
+        {"started":{"pid":<PID>}}
+        {"stdout":{"data":"ping 0\n"}}
+        {"stdout":{"closed":true}}
+        {"exited":{"status":0}}
+    "#])
+    .assert_eq(&out);
+  }
+}
+
+/// Drive `n` instance futures concurrently and collect their outputs in input
+/// order, mirroring a host firing N exec calls at one VM and awaiting them all.
+async fn futures_in_order<I, F, T>(inputs: I, f: impl Fn(usize) -> F) -> Vec<T>
+where
+  I: Iterator<Item = usize>,
+  F: std::future::Future<Output = T> + Send + 'static,
+  T: Send + 'static,
+{
+  let mut tasks = Vec::new();
+  for i in inputs {
+    tasks.push(tokio::spawn(f(i)));
+  }
+  let mut out = Vec::with_capacity(tasks.len());
+  for t in tasks {
+    out.push(t.await.expect("instance task panicked"));
+  }
+  out
+}
