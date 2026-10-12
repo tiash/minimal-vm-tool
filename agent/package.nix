@@ -14,7 +14,7 @@ rustPlatform.buildRustPackage {
     # dev-dependency; nixpkgs needs an explicit output hash for git deps
     # (Cargo.lock only stores the rev, not a content hash).
     outputHashes = {
-      "simple-test-logging-0.1.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      "simple-test-logging-0.1.0" = "sha256-uGXVE1US2PNXqiDKMth+fgNWyU2NhT6E1M5KY31Qn40=";
     };
   };
   cargoBuildFlags = ["--bin" "minimal-vm-exec-agent"];
