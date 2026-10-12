@@ -51,7 +51,7 @@ to a running agent.
 
 ## Building and testing
 
-Requires Rust 1.95.0 (see [`rust-toolchain.toml`](rust-toolchain.toml)).
+Requires Rust 1.98.1 (see [`rust-toolchain.toml`](rust-toolchain.toml)).
 
 ```sh
 # build everything

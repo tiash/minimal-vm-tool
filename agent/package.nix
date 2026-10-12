@@ -1,10 +1,10 @@
-{ pkgs ? import <nixpkgs> {}, ... }:
+{ pkgs ? import <nixpkgs> {}, rustPlatform ? pkgs.rustPlatform, ... }:
 
 let
   rootPath = ./..;
 in
 
-pkgs.rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage {
   name = "minimal-vm-exec-agent";
   src = ./empty;
   cargoRoot = ".";
@@ -14,7 +14,7 @@ pkgs.rustPlatform.buildRustPackage {
     # dev-dependency; nixpkgs needs an explicit output hash for git deps
     # (Cargo.lock only stores the rev, not a content hash).
     outputHashes = {
-      "simple-test-logging-0.1.0" = "sha256-CA0KkAPZ62vGqd9fyZupd/LazanZCY5B/z7TJwM3wYE=";
+      "simple-test-logging-0.1.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     };
   };
   cargoBuildFlags = ["--bin" "minimal-vm-exec-agent"];
