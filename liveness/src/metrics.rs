@@ -60,25 +60,28 @@ pub fn cpu_sample() -> Result<CpuSample> {
 }
 
 /// Complete the CPU sample: utilisation since [`cpu_sample`] as a
-/// percentage (0–100) across all cores. `Err` when `/proc/stat` became
-/// unreadable or the counters did not advance (kernel restart, or the two
-/// samples landed in the same jiffy).
+/// percentage (0–100) across all cores. A window in which no jiffies
+/// elapsed (the first report is sent immediately after [`cpu_sample`])
+/// reads as 0% — there was nothing measurable yet, and the next interval's
+/// report carries the real delta. `Err` only when `/proc/stat` became
+/// unreadable.
 pub fn sample(cpu: &mut CpuSample) -> Result<f64> {
   let second = read_proc_stat()?;
   let first = cpu.first;
   *cpu = CpuSample { first: second };
-  cpu_percent(first, second).ok_or_else(|| anyhow::anyhow!("/proc/stat counters did not advance"))
+  Ok(cpu_percent(first, second))
 }
 
 /// Pure busy-jiffie ratio between two counter snapshots, as a percentage
-/// clamped to 0–100. `None` when no time elapsed between the snapshots.
-fn cpu_percent(first: ProcStat, second: ProcStat) -> Option<f64> {
-  let total_delta = second.total.checked_sub(first.total)?;
+/// clamped to 0–100. Counters that run backwards (kernel restart mid-sample)
+/// saturate to 0 rather than producing a bogus number.
+fn cpu_percent(first: ProcStat, second: ProcStat) -> f64 {
+  let total_delta = second.total.saturating_sub(first.total);
   if total_delta == 0 {
-    return None;
+    return 0.0;
   }
-  let busy_delta = (second.total - second.idle).checked_sub(first.total - first.idle)?;
-  Some((busy_delta as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0))
+  let busy_delta = (second.total - second.idle).saturating_sub(first.total - first.idle);
+  (busy_delta as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0)
 }
 
 fn read_proc_stat() -> Result<ProcStat> {
@@ -212,9 +215,9 @@ mod tests {
           idle: 850
         }
       ),
-      Some(75.0)
+      75.0
     );
-    // No elapsed time (counters unchanged): no measurement is possible.
+    // No elapsed time (the immediate first report): a valid 0% sample.
     assert_eq!(
       cpu_percent(
         ProcStat {
@@ -226,9 +229,9 @@ mod tests {
           idle: 800
         }
       ),
-      None
+      0.0
     );
-    // Idle-only interval: 0% busy, distinct from "unknown".
+    // Idle-only interval: 0% busy.
     assert_eq!(
       cpu_percent(
         ProcStat {
@@ -240,7 +243,18 @@ mod tests {
           idle: 900
         }
       ),
-      Some(0.0)
+      0.0
+    );
+    // Counters running backwards (kernel restart mid-sample) saturate to 0.
+    assert_eq!(
+      cpu_percent(
+        ProcStat {
+          total: 1000,
+          idle: 800
+        },
+        ProcStat { total: 5, idle: 4 }
+      ),
+      0.0
     );
   }
 
