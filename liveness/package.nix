@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> {}, rustPlatform ? pkgs.rustPlatform, ... }:
 
 let
-  rootPath = ./../..;
+  rootPath = ./..;
 in
 
 rustPlatform.buildRustPackage {
