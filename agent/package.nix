@@ -26,5 +26,6 @@ rustPlatform.buildRustPackage {
     cp ${rootPath + /Cargo.toml} Cargo.toml
     cp -r ${rootPath + /agent} agent
     cp -r ${rootPath + /protocol} protocol
+    cp -r ${rootPath + /liveness} liveness
   '';
 }
