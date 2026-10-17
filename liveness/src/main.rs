@@ -91,14 +91,7 @@ async fn connect(cid: u32, port: u32) -> Result<tokio::net::UnixStream> {
   let addr = socket2::SockAddr::vsock(cid, port);
   socket
     .connect(&addr)
-    .or_else(|e| {
-      if e.raw_os_error() == Some(libc::EINPROGRESS) {
-        Ok(())
-      } else {
-        Err(e)
-      }
-    })
-    .context("initiating vsock connect")?;
+    .map_err(|e| anyhow::anyhow!("initiating vsock connect: {e}"))?;
   let stream = tokio::net::UnixStream::from_std(socket.into())?;
   stream
     .writable()
@@ -106,8 +99,10 @@ async fn connect(cid: u32, port: u32) -> Result<tokio::net::UnixStream> {
     .context("waiting for vsock connect to complete")?;
   // A non-blocking connect can fail asynchronously; surface the error the
   // socket holds instead of reporting on a dead connection.
-  stream.take_error()?.context("vsock connect failed")?;
-  Ok(stream)
+  match stream.take_error()? {
+    | None => Ok(stream),
+    | Some(e) => Err(anyhow::anyhow!("vsock connect failed: {e}")),
+  }
 }
 
 mod agent;
