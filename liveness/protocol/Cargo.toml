@@ -1,0 +1,15 @@
+[package]
+name = "minimal-vm-liveness-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0.104"
+log = "0.4.34"
+tokio = { version = "1.53.2", features = ["io-util"] }
+
+[dev-dependencies]
+expect-test = "1.5.1"
+tokio = { version = "1.53.2", features = ["full"] }
