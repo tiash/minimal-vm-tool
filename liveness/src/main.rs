@@ -82,23 +82,26 @@ async fn run(args: &Args) -> Result<()> {
   agent::report_until_disconnected(stream, shutdown).await
 }
 
-/// Dial the host. `SOCK_NONBLOCK` at creation so the socket registers with
-/// epoll cleanly once converted to tokio (a socket that completed a blocking
-/// connect cannot be registered non-blocking afterwards).
+/// Dial the host. The connect is non-blocking: `connect()` usually returns
+/// `EINPROGRESS` (the vsock transport completes asynchronously), so the
+/// socket is converted to tokio and the completion is awaited via
+/// writability; `take_error()` then surfaces an async failure (e.g. a host
+/// RST) instead of reporting on a dead connection.
 async fn connect(cid: u32, port: u32) -> Result<tokio::net::UnixStream> {
   let socket = socket2::Socket::new(socket2::Domain::VSOCK, socket2::Type::STREAM, None)?;
   socket.set_nonblocking(true)?;
   let addr = socket2::SockAddr::vsock(cid, port);
-  socket
-    .connect(&addr)
-    .map_err(|e| anyhow::anyhow!("initiating vsock connect: {e}"))?;
+  match socket.connect(&addr) {
+    | Ok(()) => {},
+    // The connect is in flight; its outcome is polled below.
+    | Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => {},
+    | Err(e) => return Err(anyhow::anyhow!("initiating vsock connect: {e}")),
+  }
   let stream = tokio::net::UnixStream::from_std(socket.into())?;
   stream
     .writable()
     .await
     .context("waiting for vsock connect to complete")?;
-  // A non-blocking connect can fail asynchronously; surface the error the
-  // socket holds instead of reporting on a dead connection.
   match stream.take_error()? {
     | None => Ok(stream),
     | Some(e) => Err(anyhow::anyhow!("vsock connect failed: {e}")),
