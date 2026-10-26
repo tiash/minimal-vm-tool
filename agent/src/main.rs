@@ -96,7 +96,7 @@ async fn main() {
                     child_stdin.write_all(&data).await?;
                 }
             log::debug!("Stdin copy data end...");
-            tx.send(&[protocol::Message::Stdin(protocol::Stdio::Closed)]).await?;
+            tx.send_and_flush(&[protocol::Message::Stdin(protocol::Stdio::Closed)]).await?;
             log::debug!("Stdin copy task exiting...");
             Ok(())
     }};
@@ -122,7 +122,7 @@ async fn main() {
             }
         }
     }
-    tx.send(&[protocol::Message::Stdout(protocol::Stdio::Closed)]).await?;
+    tx.send_and_flush(&[protocol::Message::Stdout(protocol::Stdio::Closed)]).await?;
     Ok(())
 }};
 let stderr = {
@@ -147,7 +147,7 @@ let stderr = {
             }
         }
     }
-    tx.send(&[protocol::Message::Stderr(protocol::Stdio::Closed)]).await?;
+    tx.send_and_flush(&[protocol::Message::Stderr(protocol::Stdio::Closed)]).await?;
     Ok(())
 }};
     let exit = {
@@ -167,7 +167,12 @@ let stderr = {
         },
         exit = process.wait() => {
             log::debug!("Process exited with status: {:?}", exit);
-            tx.send(&[protocol::Message::Exited(protocol::Exited {
+            // Terminal message: must reach the wire even when no later
+            // traffic would flush it (a lingering writer holding the pipes
+            // keeps the stream tasks — and with them the final flush below —
+            // from ever running). `send` alone reports success with the
+            // message still buffered.
+            tx.send_and_flush(&[protocol::Message::Exited(protocol::Exited {
                 status: exit?.into_raw(),
             })]).await?;
             break;

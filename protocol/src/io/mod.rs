@@ -5,6 +5,9 @@ mod rx;
 pub use rx::Rx;
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 use crate::Message;
 #[cfg(test)]
 pub(crate) async fn serialize_messages(msgs: impl IntoIterator<Item = &Message>) -> Vec<u8> {

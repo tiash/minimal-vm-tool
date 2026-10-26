@@ -145,6 +145,72 @@ async fn kill() {
   .assert_eq(&output);
 }
 
+/// A terminal message must reach the wire even under backpressure and with a
+/// lingering writer (a backgrounded child inheriting the command's pipes).
+/// The command floods stdout (far more than the connection's buffer) while
+/// the host does not read, then exits with the backgrounded child still
+/// holding the pipes: the `exited` send hits a full buffer, and the stream
+/// tasks never run again to flush it. With a plain `send` the agent reports
+/// success while `exited` sits in the Tx buffer forever; `send_and_flush`
+/// parks until the host drains, and `exited` arrives as soon as the host
+/// reads.
+#[tokio::test]
+async fn exited_is_delivered_despite_backpressure_and_a_lingering_writer() {
+  simple_test_logging::init();
+
+  let mut proc = tokio::process::Command::new(
+    std::env::var("CARGO_BIN_EXE_minimal-vm-exec-agent")
+      .expect("minimal-vm-exec-agent unavailable."),
+  )
+  .stdin(std::process::Stdio::piped())
+  .stdout(std::process::Stdio::piped())
+  .stderr(std::process::Stdio::inherit())
+  .spawn()
+  .expect("failed to run");
+
+  let mut stdin = proc.stdin.take().expect("failed to take stdin");
+  let exec =
+    r#"{"exec":{"prog":"sh","args":["-c","yes 0123456789abcdef | head -c 200000; sleep 60 &"]}}"#;
+  {
+    use tokio::io::AsyncWriteExt as _;
+    stdin.write_all(exec.as_bytes()).await.expect("write exec");
+    stdin.write_all(b"\n").await.expect("write newline");
+    stdin.shutdown().await.expect("shutdown stdin");
+  }
+  drop(stdin);
+
+  // Don't read while the flood lands: the agent→host pipe fills, so the
+  // exit task's send finds a full buffer. The command itself exits at once
+  // (head is done; only the lingering `sleep 60 &` keeps the pipes open).
+  tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+  // Now drain: `exited` must follow the buffered output. A plain send
+  // strands it — nothing would ever call into Tx again to write it.
+  let mut stdout = tokio::io::BufReader::new(proc.stdout.take().expect("stdout"));
+  let mut line = String::new();
+  let saw_exited = loop {
+    use tokio::io::AsyncBufReadExt as _;
+    line.clear();
+    match tokio::time::timeout(
+      std::time::Duration::from_secs(10),
+      stdout.read_line(&mut line),
+    )
+    .await
+    {
+      | Ok(Ok(0)) | Err(_) => break false,
+      | Ok(Ok(_)) => {
+        if line.contains(r#""exited""#) {
+          break true;
+        }
+      },
+      | Ok(Err(e)) => panic!("failed to read agent stdout: {e}"),
+    }
+  };
+  assert!(saw_exited, "no exited after draining; last line: {line}");
+
+  proc.kill().await.expect("failed to kill agent");
+}
+
 /// Many agent instances running at the same time must not interfere with each
 /// other: each connection is a fully independent agent (its own child process,
 /// its own stdio), which is what lets a host fire concurrent exec calls at one
