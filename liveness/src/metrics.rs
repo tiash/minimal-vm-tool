@@ -140,14 +140,19 @@ fn meminfo_field(meminfo: &str, prefix: &str) -> Result<u64> {
 /// via `statvfs` over the entries of `/proc/mounts`.
 ///
 /// Skipped: 9p mounts (host-shared directories — their usage is the
-/// host's, not the guest's), read-only mounts, `/run` and `/dev` with
-/// their sub-mounts (runtime state and device nodes — tmpfs noise, not
-/// storage the operator can plan around), and pseudo-filesystems whose
-/// `statvfs` reports no blocks (`proc`, `sysfs`, `devpts`, …). A mount
-/// point mounted several times (over-mounts) is reported once.
+/// host's, not the guest's), read-only mounts, `/run`, `/dev` and `/nix`
+/// with their sub-mounts (runtime state, device nodes, and the nix store
+/// — not storage the operator plans around), and pseudo-filesystems whose
+/// `statvfs` reports no blocks (`proc`, `sysfs`, `devpts`, …).
+///
+/// Bind mounts of one filesystem (`/workspace` and `/tmp` both on
+/// `/scratch`, say) share their device id, so they are reported once,
+/// under the first mount point `/proc/mounts` lists for that device —
+/// the original mount, with the binds created later appearing after it.
 pub fn disks() -> Result<Vec<FileSystemUsage>> {
   let mounts = std::fs::read_to_string("/proc/mounts").context("reading /proc/mounts")?;
   let mut seen: Vec<String> = Vec::new();
+  let mut devices: Vec<u64> = Vec::new();
   let mut disks = Vec::new();
   for line in mounts.lines() {
     let mut fields = line.split_whitespace();
@@ -173,21 +178,56 @@ pub fn disks() -> Result<Vec<FileSystemUsage>> {
     seen.push(mount_point.clone());
     // A pseudo-filesystem (`proc`, `sysfs`, …) has no blocks to report;
     // an inaccessible mount point is equally not a usage sample.
-    match disk_of(&mount_point) {
-      | Ok(usage) if usage.total > 0 => disks.push(FileSystemUsage { mount_point, usage }),
-      | _ => {},
+    let usage = match disk_of(&mount_point) {
+      | Ok(usage) if usage.total > 0 => usage,
+      | _ => continue,
+    };
+    // The device id identifies the underlying filesystem: a bind mount
+    // of an already-reported filesystem adds no new gauge.
+    let device = std::fs::metadata(&mount_point)
+      .map(|meta| std::os::unix::fs::MetadataExt::dev(&meta))
+      .unwrap_or(u64::MAX);
+    if devices.contains(&device) {
+      continue;
     }
+    devices.push(device);
+    let label = device_label(device);
+    disks.push(FileSystemUsage {
+      mount_point,
+      label,
+      usage,
+    });
   }
   Ok(disks)
 }
 
-/// Whether a mount point is `/run` or `/dev` or inside either: runtime
-/// state and device nodes, not filesystems worth a gauge.
+/// The label udev gives the underlying device: the filesystem label
+/// (`/dev/disk/by-label/<name>`), or else the virtio serial
+/// (`/dev/disk/by-id/virtio-<serial>`). `None` when neither exists.
+fn device_label(device: u64) -> Option<String> {
+  let by_dir = |dir: &str| {
+    std::fs::read_dir(dir)
+      .ok()?
+      .filter_map(|entry| entry.ok())
+      .find_map(|entry| {
+        let path = entry.path();
+        let target = std::fs::metadata(&path).ok()?;
+        if std::os::unix::fs::MetadataExt::dev(&target) != device {
+          return None;
+        }
+        path.file_name()?.to_str().map(str::to_string)
+      })
+  };
+  by_dir("/dev/disk/by-label").or_else(|| by_dir("/dev/disk/by-id"))
+}
+
+/// Whether a mount point is `/run`, `/dev` or `/nix` or inside either:
+/// runtime state, device nodes, and the nix store — not filesystems
+/// worth a gauge.
 fn is_runtime_mount(mount_point: &str) -> bool {
-  mount_point == "/run"
-    || mount_point == "/dev"
-    || mount_point.starts_with("/run/")
-    || mount_point.starts_with("/dev/")
+  ["/run", "/dev", "/nix"]
+    .iter()
+    .any(|prefix| mount_point == *prefix || mount_point.starts_with(&format!("{prefix}/")))
 }
 
 /// Decode the octal escapes of `/proc/mounts` (`\040` for a space, `\011`
@@ -390,6 +430,20 @@ mod tests {
       assert!(disk.usage.total > 0);
       assert!(disk.usage.used <= disk.usage.total);
     }
+    // One entry per underlying filesystem: no two reported mounts may
+    // share a device id (bind mounts of one filesystem collapse).
+    let mut devices: Vec<u64> = Vec::new();
+    for disk in &disks {
+      let device = std::fs::metadata(&disk.mount_point)
+        .map(|meta| std::os::unix::fs::MetadataExt::dev(&meta))
+        .expect("the mount point is statvfs-able, so it is stat-able");
+      assert!(
+        !devices.contains(&device),
+        "one filesystem must be reported once: {}",
+        disk.mount_point
+      );
+      devices.push(device);
+    }
   }
 
   #[test]
@@ -402,14 +456,26 @@ mod tests {
 
   #[test]
   fn runtime_mounts_are_excluded() {
-    assert!(is_runtime_mount("/run"));
-    assert!(is_runtime_mount("/run/user/1000"));
-    assert!(is_runtime_mount("/dev"));
-    assert!(is_runtime_mount("/dev/shm"));
-    assert!(!is_runtime_mount("/"));
-    assert!(!is_runtime_mount("/scratch"));
-    assert!(!is_runtime_mount("/srv/run-like"));
-    assert!(!is_runtime_mount("/devtools"));
+    for mount in [
+      "/run",
+      "/run/user/1000",
+      "/dev",
+      "/dev/shm",
+      "/nix",
+      "/nix/store",
+    ] {
+      assert!(is_runtime_mount(mount), "{mount} must be excluded");
+    }
+    for mount in [
+      "/",
+      "/scratch",
+      "/workspace",
+      "/tmp",
+      "/srv/run-like",
+      "/devtools",
+    ] {
+      assert!(!is_runtime_mount(mount), "{mount} must not be excluded");
+    }
   }
 
   #[test]

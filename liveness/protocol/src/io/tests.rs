@@ -13,6 +13,7 @@ fn sample_status() -> Status {
     swap: Usage { used: 2, total: 8 },
     disks: vec![FileSystemUsage {
       mount_point: "/".to_string(),
+      label: Some("scratch".to_string()),
       usage: Usage { used: 2, total: 8 },
     }],
   }

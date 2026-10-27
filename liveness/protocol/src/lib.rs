@@ -115,6 +115,11 @@ pub struct Status {
 pub struct FileSystemUsage {
   /// The mount point, as it appears in `/proc/mounts`.
   pub mount_point: String,
+  /// The underlying device's label (`/dev/disk/by-label/<name>`, or
+  /// `virtio-<serial>` from `by-id`), if it has one. Bind mounts of one
+  /// filesystem share it.
+  #[serde(default)]
+  pub label: Option<String>,
   /// Used / total bytes on that filesystem.
   pub usage: Usage,
 }
@@ -174,12 +179,13 @@ mod tests {
       swap: Usage { used: 0, total: 0 },
       disks: vec![FileSystemUsage {
         mount_point: "/".to_string(),
+        label: None,
         usage: Usage { used: 3, total: 4 },
       }],
     };
     let line = serde_json::to_string(&Message::Status(status.clone())).expect("serialize");
     expect_test::expect![[r#"
-    {"status":{"systemd":"starting","cpu_percent":12.5,"memory":{"used":1,"total":2},"swap":{"used":0,"total":0},"disks":[{"mount_point":"/","usage":{"used":3,"total":4}}]}}"#]]
+    {"status":{"systemd":"starting","cpu_percent":12.5,"memory":{"used":1,"total":2},"swap":{"used":0,"total":0},"disks":[{"mount_point":"/","label":null,"usage":{"used":3,"total":4}}]}}"#]]
     .assert_eq(&line);
     let parsed = serde_json::from_str::<Message>(&line).expect("deserialize");
     assert_eq!(parsed, Message::Status(status));
