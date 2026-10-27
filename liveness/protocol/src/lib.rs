@@ -18,7 +18,7 @@ use serde::Serialize;
 pub const PORT: u32 = u32::from_be_bytes(*b"live");
 
 /// Seconds between the status reports the agent streams while connected.
-pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[test]
 fn show_port() {
