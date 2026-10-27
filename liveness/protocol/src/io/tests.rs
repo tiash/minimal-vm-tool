@@ -1,3 +1,4 @@
+use crate::FileSystemUsage;
 use crate::Status;
 use crate::SystemdState;
 use crate::Usage;
@@ -9,7 +10,11 @@ fn sample_status() -> Status {
     systemd: SystemdState::Starting,
     cpu_percent: 42.0,
     memory: Usage { used: 1, total: 4 },
-    disk: Usage { used: 2, total: 8 },
+    swap: Usage { used: 2, total: 8 },
+    disks: vec![FileSystemUsage {
+      mount_point: "/".to_string(),
+      usage: Usage { used: 2, total: 8 },
+    }],
   }
 }
 

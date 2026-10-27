@@ -56,7 +56,8 @@ async fn report(
     systemd: crate::metrics::systemd_state(),
     cpu_percent: crate::metrics::sample(cpu)?,
     memory: crate::metrics::memory()?,
-    disk: crate::metrics::disk()?,
+    swap: crate::metrics::swap()?,
+    disks: crate::metrics::disks()?,
   };
   tx.send(&status)
     .await
@@ -89,7 +90,11 @@ mod tests {
     };
     assert!(first.cpu_percent >= 0.0 && first.cpu_percent <= 100.0);
     assert!(first.memory.total > 0);
-    assert!(first.disk.total > 0);
+    assert!(first.swap.used <= first.swap.total);
+    assert!(
+      first.disks.iter().any(|d| d.mount_point == "/"),
+      "the root filesystem must be reported"
+    );
 
     // Dropping the server end of the duplex closes the stream: the next
     // send must fail and the loop must return.

@@ -27,7 +27,8 @@ impl<W: tokio::io::AsyncWrite + Unpin> Tx<W> {
 
   /// Serialize and write one status line.
   pub async fn send(&mut self, status: &Status) -> Result<()> {
-    let line = serde_json::to_string(&Message::Status(*status)).context("serializing status")?;
+    let line =
+      serde_json::to_string(&Message::Status(status.clone())).context("serializing status")?;
     self
       .writer
       .write_all(line.as_bytes())

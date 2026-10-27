@@ -44,7 +44,11 @@ async fn reports_status_until_killed() {
     .expect("first report should be valid");
   assert!(first.cpu_percent >= 0.0 && first.cpu_percent <= 100.0);
   assert!(first.memory.total > 0);
-  assert!(first.disk.total > 0);
+  assert!(first.swap.used <= first.swap.total);
+  assert!(
+    first.disks.iter().any(|d| d.mount_point == "/"),
+    "the root filesystem must be reported"
+  );
 
   child.kill().await.expect("killing the agent");
   let _ = child.wait().await;

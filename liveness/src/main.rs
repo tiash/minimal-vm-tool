@@ -8,7 +8,7 @@ use minimal_vm_liveness_protocol as protocol;
 #[command(name = "minimal-vm-liveness-agent")]
 #[command(
   about = "Minimal VM Liveness Agent",
-  long_about = "Connects to the host over virtio-vsock and streams one status line (systemd state, CPU, memory, disk) every interval. The connection is made once: on disconnect or error the process exits, and systemd's Restart= policy reconnects it."
+  long_about = "Connects to the host over virtio-vsock and streams one status line (systemd state, CPU, memory, swap, per-filesystem usage) every interval. The connection is made once: on disconnect or error the process exits, and systemd's Restart= policy reconnects it."
 )]
 struct Args {
   /// CID to connect to. The default is the vsock host CID: the agent always

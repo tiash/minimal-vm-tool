@@ -8,6 +8,7 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 
+use minimal_vm_liveness_protocol::FileSystemUsage;
 use minimal_vm_liveness_protocol::SystemdState;
 use minimal_vm_liveness_protocol::Usage;
 
@@ -96,16 +97,9 @@ fn read_proc_stat() -> Result<ProcStat> {
 /// classic `MemTotal − MemAvailable` (what the kernel could not give a new
 /// allocation without reclaim).
 pub fn memory() -> Result<Usage> {
-  let meminfo = std::fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")?;
-  let field = |prefix: &str| {
-    meminfo.lines().find_map(|line| {
-      line
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.trim_end_matches(" kB").trim().parse::<u64>().ok())
-    })
-  };
-  let total_kb = field("MemTotal:").context("/proc/meminfo has no MemTotal")?;
-  let available_kb = field("MemAvailable:").context("/proc/meminfo has no MemAvailable")?;
+  let meminfo = read_meminfo()?;
+  let total_kb = meminfo_field(&meminfo, "MemTotal:")?;
+  let available_kb = meminfo_field(&meminfo, "MemAvailable:")?;
   let used_kb = total_kb.saturating_sub(available_kb);
   Ok(Usage {
     used: used_kb * 1024,
@@ -113,9 +107,98 @@ pub fn memory() -> Result<Usage> {
   })
 }
 
-/// Root filesystem used / total in bytes, via `statvfs`.
-pub fn disk() -> Result<Usage> {
-  disk_of("/")
+/// Swap used / total in bytes, from `/proc/meminfo`. A guest without swap
+/// reports zeroes, which is a real measurement, not a failure.
+pub fn swap() -> Result<Usage> {
+  let meminfo = read_meminfo()?;
+  let total_kb = meminfo_field(&meminfo, "SwapTotal:")?;
+  let free_kb = meminfo_field(&meminfo, "SwapFree:")?;
+  let used_kb = total_kb.saturating_sub(free_kb);
+  Ok(Usage {
+    used: used_kb * 1024,
+    total: total_kb * 1024,
+  })
+}
+
+fn read_meminfo() -> Result<String> {
+  std::fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")
+}
+
+/// One `Name:  value kB` field of `/proc/meminfo`, as kilobytes.
+fn meminfo_field(meminfo: &str, prefix: &str) -> Result<u64> {
+  meminfo
+    .lines()
+    .find_map(|line| {
+      line
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.trim_end_matches(" kB").trim().parse::<u64>().ok())
+    })
+    .with_context(|| format!("/proc/meminfo has no {prefix}"))
+}
+
+/// Every writable guest filesystem: used / total in bytes per mount point,
+/// via `statvfs` over the entries of `/proc/mounts`.
+///
+/// Skipped: 9p mounts (host-shared directories — their usage is the
+/// host's, not the guest's), read-only mounts, and pseudo-filesystems
+/// whose `statvfs` reports no blocks (`proc`, `sysfs`, `devpts`, …). A
+/// mount point mounted several times (over-mounts) is reported once.
+pub fn disks() -> Result<Vec<FileSystemUsage>> {
+  let mounts = std::fs::read_to_string("/proc/mounts").context("reading /proc/mounts")?;
+  let mut seen: Vec<String> = Vec::new();
+  let mut disks = Vec::new();
+  for line in mounts.lines() {
+    let mut fields = line.split_whitespace();
+    let (_device, mount_point, fstype, options) =
+      match (fields.next(), fields.next(), fields.next(), fields.next()) {
+        | (Some(d), Some(m), Some(t), Some(o)) => (d, m, t, o),
+        // A truncated line has no mount to report.
+        | _ => continue,
+      };
+    if fstype.starts_with("9p") {
+      continue;
+    }
+    if options.split(',').any(|option| option == "ro") {
+      continue;
+    }
+    let mount_point = unescape_mount_point(mount_point);
+    if seen.iter().any(|seen| seen == &mount_point) {
+      continue;
+    }
+    seen.push(mount_point.clone());
+    // A pseudo-filesystem (`proc`, `sysfs`, …) has no blocks to report;
+    // an inaccessible mount point is equally not a usage sample.
+    match disk_of(&mount_point) {
+      | Ok(usage) if usage.total > 0 => disks.push(FileSystemUsage { mount_point, usage }),
+      | _ => {},
+    }
+  }
+  Ok(disks)
+}
+
+/// Decode the octal escapes of `/proc/mounts` (`\040` for a space, `\011`
+/// for a tab, `\134` for a backslash): a mount point containing them would
+/// otherwise be statvfs'd at the wrong path.
+fn unescape_mount_point(field: &str) -> String {
+  let mut decoded = String::with_capacity(field.len());
+  let mut chars = field.chars();
+  while let Some(c) = chars.next() {
+    if c != '\\' {
+      decoded.push(c);
+      continue;
+    }
+    let rest: String = chars.by_ref().take(3).collect();
+    match u32::from_str_radix(&rest, 8) {
+      | Ok(byte) if rest.len() == 3 => {
+        decoded.push(char::from_u32(byte).unwrap_or(char::REPLACEMENT_CHARACTER))
+      },
+      | _ => {
+        decoded.push('\\');
+        decoded.push_str(&rest);
+      },
+    }
+  }
+  decoded
 }
 
 fn disk_of(path: impl AsRef<Path>) -> Result<Usage> {
@@ -268,23 +351,50 @@ mod tests {
   }
 
   #[test]
-  fn disk_reads_root_fs() {
-    let usage = disk().expect("disk");
-    assert!(usage.total > 0);
+  fn swap_reads_proc_meminfo() {
+    // /proc/meminfo exists in any Linux container; just sanity-check the
+    // invariants rather than exact values.
+    let usage = swap().expect("swap");
     assert!(usage.used <= usage.total);
+  }
+
+  #[test]
+  fn disks_report_every_writable_fs() {
+    // /proc/mounts and statvfs exist in any Linux container; just
+    // sanity-check the invariants rather than exact values.
+    let disks = disks().expect("disks");
+    assert!(
+      disks.iter().any(|d| d.mount_point == "/"),
+      "the root filesystem must be reported"
+    );
+    for disk in &disks {
+      assert!(disk.usage.total > 0);
+      assert!(disk.usage.used <= disk.usage.total);
+    }
   }
 
   #[test]
   fn meminfo_field_parser_handles_kib_suffix() {
     let meminfo = "MemTotal:       16088156 kB\nMemAvailable:   1000000 kB\n";
-    let field = |prefix: &str| {
-      meminfo.lines().find_map(|line| {
-        line
-          .strip_prefix(prefix)
-          .and_then(|rest| rest.trim_end_matches(" kB").trim().parse::<u64>().ok())
-      })
-    };
-    assert_eq!(field("MemTotal:"), Some(16088156));
-    assert_eq!(field("MemAvailable:"), Some(1000000));
+    assert_eq!(meminfo_field(meminfo, "MemTotal:").unwrap(), 16088156);
+    assert_eq!(meminfo_field(meminfo, "MemAvailable:").unwrap(), 1000000);
+    assert!(meminfo_field(meminfo, "SwapTotal:").is_err());
+  }
+
+  #[test]
+  fn mount_point_escapes_decode() {
+    assert_eq!(unescape_mount_point("/"), "/");
+    assert_eq!(
+      unescape_mount_point("/srv/with\\040space"),
+      "/srv/with space"
+    );
+    assert_eq!(unescape_mount_point("/srv/with\\011tab"), "/srv/with\ttab");
+    assert_eq!(
+      unescape_mount_point("/srv/with\\134slash"),
+      "/srv/with\\slash"
+    );
+    // A dangling or non-octal escape is kept verbatim.
+    assert_eq!(unescape_mount_point("/srv/with\\4"), "/srv/with\\4");
+    assert_eq!(unescape_mount_point("/srv/with\\09z"), "/srv/with\\09z");
   }
 }

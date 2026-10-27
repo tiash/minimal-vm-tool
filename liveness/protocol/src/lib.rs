@@ -90,7 +90,7 @@ impl std::fmt::Display for SystemdState {
 }
 
 /// One status report from the guest.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Status {
   /// systemd's overall state: the boot gate (`is_operational`) and the
   /// health signal the host monitors.
@@ -99,8 +99,19 @@ pub struct Status {
   pub cpu_percent: f64,
   /// RAM: used / total bytes.
   pub memory: Usage,
-  /// Root filesystem: used / total bytes.
-  pub disk: Usage,
+  /// Swap: used / total bytes.
+  pub swap: Usage,
+  /// Every writable guest filesystem: one entry per mount point.
+  pub disks: Vec<FileSystemUsage>,
+}
+
+/// One guest filesystem's usage, keyed by its mount point.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSystemUsage {
+  /// The mount point, as it appears in `/proc/mounts`.
+  pub mount_point: String,
+  /// Used / total bytes on that filesystem.
+  pub usage: Usage,
 }
 
 /// Used/total byte counts of one resource.
@@ -111,7 +122,7 @@ pub struct Usage {
 }
 
 /// The only message the agent sends: `{"status": ...}`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Message {
   Status(Status),
@@ -155,11 +166,15 @@ mod tests {
       systemd: SystemdState::Starting,
       cpu_percent: 12.5,
       memory: Usage { used: 1, total: 2 },
-      disk: Usage { used: 3, total: 4 },
+      swap: Usage { used: 0, total: 0 },
+      disks: vec![FileSystemUsage {
+        mount_point: "/".to_string(),
+        usage: Usage { used: 3, total: 4 },
+      }],
     };
-    let line = serde_json::to_string(&Message::Status(status)).expect("serialize");
+    let line = serde_json::to_string(&Message::Status(status.clone())).expect("serialize");
     expect_test::expect![[r#"
-    {"status":{"systemd":"starting","cpu_percent":12.5,"memory":{"used":1,"total":2},"disk":{"used":3,"total":4}}}"#]]
+    {"status":{"systemd":"starting","cpu_percent":12.5,"memory":{"used":1,"total":2},"swap":{"used":0,"total":0},"disks":[{"mount_point":"/","usage":{"used":3,"total":4}}]}}"#]]
     .assert_eq(&line);
     let parsed = serde_json::from_str::<Message>(&line).expect("deserialize");
     assert_eq!(parsed, Message::Status(status));
@@ -171,9 +186,10 @@ mod tests {
       systemd: SystemdState::Unknown,
       cpu_percent: 0.0,
       memory: Usage { used: 0, total: 0 },
-      disk: Usage { used: 0, total: 0 },
+      swap: Usage { used: 0, total: 0 },
+      disks: Vec::new(),
     };
-    let line = serde_json::to_string(&Message::Status(status)).expect("serialize");
+    let line = serde_json::to_string(&Message::Status(status.clone())).expect("serialize");
     let parsed = serde_json::from_str::<Message>(&line).expect("deserialize");
     assert_eq!(parsed, Message::Status(status));
   }
