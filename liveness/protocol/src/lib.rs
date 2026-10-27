@@ -99,9 +99,14 @@ pub struct Status {
   pub cpu_percent: f64,
   /// RAM: used / total bytes.
   pub memory: Usage,
-  /// Swap: used / total bytes.
+  /// Swap: used / total bytes. Defaults to zeroes: a guest built from an
+  /// older revision omits the field, and the host must still accept its
+  /// reports (images are cached and upgraded independently of the host).
+  #[serde(default)]
   pub swap: Usage,
-  /// Every writable guest filesystem: one entry per mount point.
+  /// Every writable guest filesystem: one entry per mount point. Defaults
+  /// to empty for the same reason as [`Status::swap`].
+  #[serde(default)]
   pub disks: Vec<FileSystemUsage>,
 }
 
@@ -115,7 +120,7 @@ pub struct FileSystemUsage {
 }
 
 /// Used/total byte counts of one resource.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
   pub used: u64,
   pub total: u64,
@@ -178,6 +183,16 @@ mod tests {
     .assert_eq(&line);
     let parsed = serde_json::from_str::<Message>(&line).expect("deserialize");
     assert_eq!(parsed, Message::Status(status));
+  }
+
+  #[test]
+  fn old_guest_report_without_swap_and_disks_still_parses() {
+    let line = r#"{"status":{"systemd":"running","cpu_percent":5.0,"memory":{"used":1,"total":2},"disk":{"used":3,"total":4}}}"#;
+    let parsed = serde_json::from_str::<Message>(line).expect("deserialize");
+    let Message::Status(status) = parsed;
+    assert_eq!(status.systemd, SystemdState::Running);
+    assert_eq!(status.swap, Usage::default());
+    assert!(status.disks.is_empty());
   }
 
   #[test]
