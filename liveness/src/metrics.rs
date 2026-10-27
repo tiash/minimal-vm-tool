@@ -140,9 +140,11 @@ fn meminfo_field(meminfo: &str, prefix: &str) -> Result<u64> {
 /// via `statvfs` over the entries of `/proc/mounts`.
 ///
 /// Skipped: 9p mounts (host-shared directories — their usage is the
-/// host's, not the guest's), read-only mounts, and pseudo-filesystems
-/// whose `statvfs` reports no blocks (`proc`, `sysfs`, `devpts`, …). A
-/// mount point mounted several times (over-mounts) is reported once.
+/// host's, not the guest's), read-only mounts, `/run` and `/dev` with
+/// their sub-mounts (runtime state and device nodes — tmpfs noise, not
+/// storage the operator can plan around), and pseudo-filesystems whose
+/// `statvfs` reports no blocks (`proc`, `sysfs`, `devpts`, …). A mount
+/// point mounted several times (over-mounts) is reported once.
 pub fn disks() -> Result<Vec<FileSystemUsage>> {
   let mounts = std::fs::read_to_string("/proc/mounts").context("reading /proc/mounts")?;
   let mut seen: Vec<String> = Vec::new();
@@ -162,6 +164,9 @@ pub fn disks() -> Result<Vec<FileSystemUsage>> {
       continue;
     }
     let mount_point = unescape_mount_point(mount_point);
+    if is_runtime_mount(&mount_point) {
+      continue;
+    }
     if seen.iter().any(|seen| seen == &mount_point) {
       continue;
     }
@@ -174,6 +179,15 @@ pub fn disks() -> Result<Vec<FileSystemUsage>> {
     }
   }
   Ok(disks)
+}
+
+/// Whether a mount point is `/run` or `/dev` or inside either: runtime
+/// state and device nodes, not filesystems worth a gauge.
+fn is_runtime_mount(mount_point: &str) -> bool {
+  mount_point == "/run"
+    || mount_point == "/dev"
+    || mount_point.starts_with("/run/")
+    || mount_point.starts_with("/dev/")
 }
 
 /// Decode the octal escapes of `/proc/mounts` (`\040` for a space, `\011`
@@ -368,6 +382,11 @@ mod tests {
       "the root filesystem must be reported"
     );
     for disk in &disks {
+      assert!(
+        !is_runtime_mount(&disk.mount_point),
+        "runtime mounts must not be reported: {}",
+        disk.mount_point
+      );
       assert!(disk.usage.total > 0);
       assert!(disk.usage.used <= disk.usage.total);
     }
@@ -379,6 +398,18 @@ mod tests {
     assert_eq!(meminfo_field(meminfo, "MemTotal:").unwrap(), 16088156);
     assert_eq!(meminfo_field(meminfo, "MemAvailable:").unwrap(), 1000000);
     assert!(meminfo_field(meminfo, "SwapTotal:").is_err());
+  }
+
+  #[test]
+  fn runtime_mounts_are_excluded() {
+    assert!(is_runtime_mount("/run"));
+    assert!(is_runtime_mount("/run/user/1000"));
+    assert!(is_runtime_mount("/dev"));
+    assert!(is_runtime_mount("/dev/shm"));
+    assert!(!is_runtime_mount("/"));
+    assert!(!is_runtime_mount("/scratch"));
+    assert!(!is_runtime_mount("/srv/run-like"));
+    assert!(!is_runtime_mount("/devtools"));
   }
 
   #[test]
