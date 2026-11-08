@@ -83,28 +83,75 @@ async fn main() {
     .await?;
 
 
-    let stdin = {
-    let rx = rx.clone();
-    let tx = tx.clone();
+    // One reader owns the socket. The four pumps below used to poll their
+    // own Rx clones, but the socket keeps only the most recently registered
+    // waker: whichever pump polled last swallowed the wakeups for the
+    // others' buffered messages, and host->guest stdin dispatch died on
+    // most fresh connections (an interactive caller writes data with no
+    // EOF following, so nothing else ever wakes the copier). The demux
+    // reads every message exactly once and hands it to the pump that wants
+    // its type; the pumps never touch the socket. The fan-out channels are
+    // unbounded so the demux always drains the socket promptly — a Kill
+    // must never queue behind a stdin forward that is blocked on a child
+    // pipe that nobody reads.
+    let (stdin_tx, mut stdin_rx) =
+        tokio::sync::mpsc::unbounded_channel::<protocol::Stdio>();
+    let (stdout_close_tx, mut stdout_close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (stderr_close_tx, mut stderr_close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel::<protocol::Kill>();
+    let demux = {
+        let mut rx = rx;
         async move || -> Result<()> {
-            let mut rx = rx;
+            log::debug!("Socket demux task starting...");
+            while let Some(message) = rx.recv::<protocol::Message>().await? {
+                match message {
+                    | protocol::Message::Stdin(message) => {
+                        let _ = stdin_tx.send(message);
+                    },
+                    | protocol::Message::Stdout(protocol::Stdio::Closed) => {
+                        let _ = stdout_close_tx.send(());
+                    },
+                    | protocol::Message::Stderr(protocol::Stdio::Closed) => {
+                        let _ = stderr_close_tx.send(());
+                    },
+                    | protocol::Message::Kill(kill) => {
+                        let _ = kill_tx.send(kill);
+                    },
+                    | _ => {},
+                }
+            }
+            // Drop the fan-out senders here, not when the join drops this
+            // completed future: join! keeps every future alive until all
+            // complete, and the pumps terminate on channel-close (the
+            // stdin copier ends its loop when the demux is gone), so the
+            // senders must go the moment the socket does.
+            drop(stdin_tx);
+            drop(stdout_close_tx);
+            drop(stderr_close_tx);
+            drop(kill_tx);
+            log::debug!("Socket demux task exiting...");
+            Ok(())
+        }
+    };
+    let stdin = {
+        let tx = tx.clone();
+        async move || -> Result<()> {
             let mut tx = tx;
             log::debug!("Stdin copy task starting...");
-                while let Some(protocol::Stdin(Some(data))) = rx.recv::<protocol::Stdin<Option<Bytes>>>().await? {
-                    log::debug!("Received {} bytes of stdin data from protocol", data.len());
-                    log::debug!("Writing {} bytes to child stdin", data.len());
-                    child_stdin.write_all(&data).await?;
-                }
+            while let Some(protocol::Stdio::Data(data)) = stdin_rx.recv().await {
+                log::debug!("Received {} bytes of stdin data from protocol", data.len());
+                log::debug!("Writing {} bytes to child stdin", data.len());
+                child_stdin.write_all(&data).await?;
+            }
             log::debug!("Stdin copy data end...");
             tx.send_and_flush(&[protocol::Message::Stdin(protocol::Stdio::Closed)]).await?;
             log::debug!("Stdin copy task exiting...");
             Ok(())
-    }};
+        }
+    };
     let stdout = {
-    let rx = rx.clone();
-    let tx = tx.clone();
+        let tx = tx.clone();
         async move || -> Result<()> {
-            let mut rx = rx;
             let mut tx = tx;
             let mut buffer = Vec::new();
             loop {
@@ -117,7 +164,7 @@ async fn main() {
                     break;
                 }
             },
-            Ok(Some(protocol::Stdout(protocol::Stdio::Closed))) = rx.recv() => {
+            Some(()) = stdout_close_rx.recv() => {
                 nix::unistd::close(child_stdout.as_raw_fd()).map_err(|e| anyhow!("closing stdout: {:?}", e))?;
             }
         }
@@ -126,10 +173,8 @@ async fn main() {
     Ok(())
 }};
 let stderr = {
-    let rx = rx.clone();
     let tx = tx.clone();
         async move || -> Result<()> {
-            let mut rx = rx;
             let mut tx = tx;
             let mut buffer = Vec::new();
             loop {
@@ -142,7 +187,7 @@ let stderr = {
                     break;
                 }
             },
-            Ok(Some(protocol::Stderr(protocol::Stdio::Closed))) = rx.recv() => {
+            Some(()) = stderr_close_rx.recv() => {
                 nix::unistd::close(child_stderr.as_raw_fd()).map_err(|e| anyhow!("closing stderr: {:?}", e))?;
             }
         }
@@ -151,19 +196,15 @@ let stderr = {
     Ok(())
 }};
     let exit = {
-    let rx = rx.clone();
-    let tx = tx.clone();
+        let tx = tx.clone();
         async move || -> Result<()> {
-            let mut rx=rx;
             let mut tx=tx;
         log::debug!("Kill signal task starting...");
         loop {
        select!{
-        kill = rx.recv() => {
-            if let Some(protocol::Kill{signal}) = kill? {
-                log::debug!("Received kill signal: {}", signal);
-                process.signal(signal).await;
-            }
+        Some(protocol::Kill{signal}) = kill_rx.recv() => {
+            log::debug!("Received kill signal: {}", signal);
+            process.signal(signal).await;
         },
         exit = process.wait() => {
             log::debug!("Process exited with status: {:?}", exit);
@@ -185,8 +226,9 @@ let stderr = {
 
     log::debug!("Async jobs starting, Waiting for process to exit...");
 
-   let (exit,stdin,stdout,stderr) = tokio::join!(biased; exit(), stdin(), stdout(), stderr());
+   let (demux,exit,stdin,stdout,stderr) = tokio::join!(biased; demux(), exit(), stdin(), stdout(), stderr());
     log::debug!("All tasks completed, waiting for connection to close...");
+    demux?;
     exit?;
     stdin?;
     stdout?;

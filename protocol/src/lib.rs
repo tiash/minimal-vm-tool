@@ -233,6 +233,15 @@ impl Message {
   pub(crate) const NoOp: Self = Self::Priv__NoOp(NoOp);
 }
 
+/// The identity conversion: a demux reader that wants every message as it
+/// arrives (one task owning the socket, fanning messages out by type)
+/// receives the union type itself.
+impl FromMessage for Message {
+  fn from_message(msg: Message) -> Result<Self, Message> {
+    Ok(msg)
+  }
+}
+
 #[cfg(test)]
 pub struct AnyMessage(pub Message);
 #[cfg(test)]
