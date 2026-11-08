@@ -211,6 +211,78 @@ async fn exited_is_delivered_despite_backpressure_and_a_lingering_writer() {
   proc.kill().await.expect("failed to kill agent");
 }
 
+/// A lone data message must reach the wire even when the connection stalls
+/// while it is being sent. The stdout pump's data sends used the lazy
+/// in-background flush: a send that finds the connection momentarily
+/// unwritable parks the message in the Tx buffer and reports success, and
+/// when no later traffic ever polls the Tx again (an interactive child that
+/// falls silent — no terminal message follows), the message strands there
+/// forever and the caller wedges. Here the command floods more than the
+/// connection's buffer and then goes silent holding the pipes open, so the
+/// pump's sends stall; the host then drains and must receive the *whole*
+/// flood, not just what fit the buffer before the stall.
+#[tokio::test]
+async fn lone_data_reaches_the_wire_even_when_the_connection_stalls() {
+  simple_test_logging::init();
+
+  let mut proc = tokio::process::Command::new(
+    std::env::var("CARGO_BIN_EXE_minimal-vm-exec-agent")
+      .expect("minimal-vm-exec-agent unavailable."),
+  )
+  .stdin(std::process::Stdio::piped())
+  .stdout(std::process::Stdio::piped())
+  .stderr(std::process::Stdio::inherit())
+  .spawn()
+  .expect("failed to run");
+
+  let mut stdin = proc.stdin.take().expect("failed to take stdin");
+  let exec =
+    r#"{"exec":{"prog":"sh","args":["-c","yes 0123456789abcdef | head -c 200000; sleep 60"]}}"#;
+  {
+    use tokio::io::AsyncWriteExt as _;
+    stdin.write_all(exec.as_bytes()).await.expect("write exec");
+    stdin.write_all(b"\n").await.expect("write newline");
+    stdin.shutdown().await.expect("shutdown stdin");
+  }
+  drop(stdin);
+
+  // Let the flood land while we do not read: the agent->host pipe fills and
+  // the pump's remaining sends stall against the full connection.
+  tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+  // Now drain: everything the child wrote must arrive. A lazy send that
+  // parked the remainder would strand it — no later traffic exists to
+  // flush the Tx. The agent stays alive (the command sleeps holding the
+  // pipes open), so drain by byte count, not EOF.
+  let mut stdout = proc.stdout.take().expect("stdout");
+  let mut buf = Vec::new();
+  let mut chunk = [0u8; 16384];
+  let saw_all = loop {
+    if buf.len() >= 200000 {
+      break true;
+    }
+    match tokio::time::timeout(
+      std::time::Duration::from_secs(10),
+      tokio::io::AsyncReadExt::read(&mut stdout, &mut chunk),
+    )
+    .await
+    {
+      | Err(_) => break false,
+      | Ok(Err(e)) => panic!("failed to read agent stdout: {e}"),
+      | Ok(Ok(0)) => break false,
+      | Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+    }
+  };
+  assert!(
+    saw_all,
+    "stranded {} of the flood: got {} bytes",
+    200000usize.saturating_sub(buf.len()),
+    buf.len(),
+  );
+
+  proc.kill().await.expect("failed to kill agent");
+}
+
 /// Many agent instances running at the same time must not interfere with each
 /// other: each connection is a fully independent agent (its own child process,
 /// its own stdio), which is what lets a host fire concurrent exec calls at one

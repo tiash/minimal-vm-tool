@@ -77,7 +77,7 @@ async fn main() {
     } = process::spawn(&exec).await.map_err(|e| anyhow!("Failed to spawn child {:?}", e))?;
 
 
-    tx.send(&[protocol::Message::Started(protocol::Started {
+    tx.send_and_flush(&[protocol::Message::Started(protocol::Started {
         pid,
     })])
     .await?;
@@ -159,7 +159,7 @@ async fn main() {
             data = read_line_or_chunk(&mut child_stdout, line_buffered, &mut buffer) => {
                 if let Some(data) = data? {
                     log::debug!("Sending {} bytes on stdout", data.len());
-                    tx.send(&[protocol::Message::Stdout(protocol::Stdio::Data(data))]).await?;
+                    tx.send_and_flush(&[protocol::Message::Stdout(protocol::Stdio::Data(data))]).await?
                 }else {
                     break;
                 }
@@ -182,7 +182,7 @@ let stderr = {
             data = read_line_or_chunk(&mut child_stderr, line_buffered, &mut buffer) =>  {
                 if let Some(data) = data? {
                     log::debug!("Sending {} bytes on stderr", data.len());
-                    tx.send(&[protocol::Message::Stderr(protocol::Stdio::Data(data))]).await?;
+                    tx.send_and_flush(&[protocol::Message::Stderr(protocol::Stdio::Data(data))]).await?
                 }else {
                     break;
                 }
